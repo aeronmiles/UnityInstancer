@@ -50,6 +50,7 @@ public class MeshInstancer : MonoBehaviour
         _meshRenderer = gameObject.GetComponent<MeshRenderer>();
 
         setMesh();
+        UpdateMesh();
     }
 
     private void setMesh()
@@ -104,19 +105,23 @@ public class MeshInstancer : MonoBehaviour
 
     void InitializeMesh(vertexBufferJob vertJob, IndexBufferJob indexJob)
     {
+        int vCount = vertJob.bufferPositions.Length;
+        NativeArray<float3> posNorm = new NativeArray<float3>(vCount * 2, Allocator.Temp);
+        int l = vCount - 1;
+        for (int i = 0; i < l; i += 2)
+        {
+            posNorm[i] = vertJob.bufferPositions[i];
+            posNorm[i + 1] = vertJob.bufferNormals[i];
+        }
         _mesh.SetVertexBufferParams(
-            vertJob.bufferPositions.Length,
+            vCount,
             new VertexAttributeDescriptor
-                (VertexAttribute.Position, VertexAttributeFormat.Float32, 3)
-        // TODO add interleaved pos & normal buffers
-        //     normalBuffer.Length,
-        //     new VertexAttributeDescriptor
-        //         (VertexAttribute.Normal, VertexAttributeFormat.Float32, 3)
+                (VertexAttribute.Position, VertexAttributeFormat.Float32, 3),
+            new VertexAttributeDescriptor
+                (VertexAttribute.Normal, VertexAttributeFormat.Float32, 3)
         );
-        _mesh.SetVertexBufferData(vertJob.bufferPositions, 0, 0, vertJob.bufferPositions.Length);
-        // TODO add interleaved pos & normal buffers
-        // _mesh.SetVertexBufferData(interleavedPosNormBuffer, 0, 0, postionBuffer.Length);
-
+        _mesh.SetVertexBufferData(posNorm, 0, 0, vCount * 2);
+        posNorm.Dispose();
 
         _mesh.SetIndexBufferParams(indexJob.bufferIndexes.Length, IndexFormat.UInt32);
         _mesh.SetIndexBufferData(indexJob.bufferIndexes, 0, 0, indexJob.bufferIndexes.Length);
@@ -125,7 +130,7 @@ public class MeshInstancer : MonoBehaviour
 
         _mesh.bounds = new Bounds(Vector3.zero, Vector3.one * 10f);
         // TODO remove
-        _mesh.RecalculateNormals();
+        // _mesh.RecalculateNormals();
     }
 
     void UpdateMesh()
@@ -204,14 +209,25 @@ public class MeshInstancer : MonoBehaviour
             uint instanceN = (uint)math.floor(index / vertexCount);
             var rand = new Random(seed + (uint)instanceN);
 
-            float4x4 iXform = float4x4.TRS(rand.NextFloat3(),
-            quaternion.Euler(rand.NextFloat3(360f)),
+            quaternion rot = quaternion.Euler(rand.NextFloat3(360f));
+            float4x4 pTRS = float4x4.TRS(rand.NextFloat3(),
+            rot,
             new float3(math.lerp(0.2f, 1f, rand.NextFloat())) * scale);
 
-            float4 m = math.mul(iXform, new float4(positions[vertIndex], 1f));
-            float3 pos = new float3(m[0], m[1], m[2]);
-            bufferPositions[index] = pos; //positions[vertIndex]; 
-            // bufferNormals[index] = normals[vertIndex];
+            float4 p = math.mul(pTRS, new float4(positions[vertIndex], 1f));
+            float3 pos = new float3(p[0], p[1], p[2]);
+            bufferPositions[index] = pos;
+
+            // Extract the vector part of the quaternion
+            float3 u = new float3(rot.value.x, rot.value.y, rot.value.z);
+            // Extract the scalar part of the quaternion
+            float s = rot.value.w;
+
+            float3 v = normals[vertIndex];
+            // Do the math
+            bufferNormals[index] = 2.0f * math.dot(u, v) * u
+                  + (s * s - math.dot(u, u)) * v
+                  + 2.0f * s * math.cross(u, v);
         }
 
         public void Dispose()
