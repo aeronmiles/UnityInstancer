@@ -52,10 +52,6 @@ public class MeshInstancer : MonoBehaviour
 
     private void Update()
     {
-        if (Input.GetKeyDown(KeyCode.Space) || Input.touchCount > 0 && Input.touches[0].phase == TouchPhase.Began)
-        {
-            Spawn();
-        }
         if (instanceJobs != null && !instanceJobs.Complete) instanceJobs.Run();
     }
 
