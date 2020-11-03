@@ -5,11 +5,12 @@
         "Unity.Burst",
         "Unity.Jobs",
         "Unity.Collections",
-        "am.unity.extensions"
+        "ECSParticles",
+        "UnityTools"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
-    "allowUnsafeCode": false,
+    "allowUnsafeCode": true,
     "overrideReferences": false,
     "precompiledReferences": [],
     "autoReferenced": true,

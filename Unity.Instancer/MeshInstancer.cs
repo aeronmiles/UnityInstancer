@@ -7,236 +7,298 @@ using Unity.Mathematics;
 using Random = Unity.Mathematics.Random;
 using System;
 
-[ExecuteInEditMode]
-[RequireComponent(typeof(MeshFilter))]
-[RequireComponent(typeof(MeshRenderer))]
+[Serializable]
+public class MeshInstancerSettings
+{
+    [Header("References")]
+    public PointCacheData SpawnPointCache;
+    public GameObject MeshContainer;
+    public Mesh InstanceMesh = null;
+    public Material Material => MeshContainer.GetComponent<MeshRenderer>().sharedMaterial;
+
+    [Header("Instance Settings")]
+    public int Count = 50000;
+    public int MaxInstancesPerMesh = 10000;
+    public int Rate = 10000;
+    public uint Seed = 55555;
+    public float Scale = 0.08f;
+    public float MinSize = 0.0022714f;
+    public float MaxSize = 0.0037857f;
+    [Header("Job Settings")]
+    public int InnerLoopBatchCount = 10000;
+
+}
+
+
 public class MeshInstancer : MonoBehaviour
 {
-
     [Header("Settings")]
-    [SerializeField] uint _randomSeed = 100;
-    [SerializeField] bool randomizeSeed = true;
-    [SerializeField] Mesh mesh = null;
-    [SerializeField] int instanceCount = 20;
-    [SerializeField] float scale = 1f;
-
-    #region private members
-    MeshFilter _meshFilter;
-    MeshRenderer _meshRenderer;
-
-    Mesh _mesh;
-    float3[] protoVerts = null;
-    float3[] protoNormals = null;
-    uint[] protoIndexes = null;
-
-
-
-    int indexCount => mesh.triangles.Length;
-    int vertexCount => mesh.vertexCount;
-    vertexBufferJob jobVerts;
-    IndexBufferJob jobIndexes;
-    JobHandle jobVertsHandle;
-    JobHandle jobIndexesHandle;
-    #endregion
-
-
-    void OnEnable()
+    public MeshInstancerSettings Settings;
+    public bool Complete => instanceJobs.Complete;
+    public int SpawnCount
     {
-        _mesh = new Mesh();
-
-        _meshFilter = gameObject.GetComponent<MeshFilter>();
-        _meshFilter.sharedMesh = _mesh;
-
-        _meshRenderer = gameObject.GetComponent<MeshRenderer>();
-
-        setMesh();
-        UpdateMesh();
-    }
-
-    private void setMesh()
-    {
-        int verCount = vertexCount;
-        protoVerts = new float3[verCount];
-        protoNormals = new float3[verCount];
-        var verts = mesh.vertices;
-        var norms = mesh.normals;
-        for (int i = 0; i < verCount; i++)
+        set
         {
-            protoVerts[i] = verts[i];
-            protoNormals[i] = norms[i];
-        }
-
-        int indCount = mesh.triangles.Length;
-        protoIndexes = new uint[indCount];
-        int[] inds = mesh.triangles;
-        for (int i = 0; i < indCount; i++)
-        {
-            protoIndexes[i] = (uint)inds[i];
+            Settings.Count = value;
         }
     }
 
-    private bool hasCompleted = true;
+    MeshInstanceJob instanceJobs;
+
+    void OnDisable()
+    {
+        Dispose();
+    }
+
     private void Update()
     {
         if (Input.GetKeyDown(KeyCode.Space) || Input.touchCount > 0 && Input.touches[0].phase == TouchPhase.Began)
         {
-            UpdateMesh();
-            hasCompleted = false;
+            Spawn();
         }
-        if (!hasCompleted && jobVertsHandle.IsCompleted && jobIndexesHandle.IsCompleted)
-        {
-            jobVertsHandle.Complete();
-            jobIndexesHandle.Complete();
-            InitializeMesh(jobVerts, jobIndexes);
-
-            jobVerts.Dispose();
-            jobIndexes.Dispose();
-            hasCompleted = true;
-        }
-    }
-    void OnDestroy()
-    {
-#if UNITY_EDITOR
-        if (_mesh != null) DestroyImmediate(_mesh);
-#else
-        if (_mesh != null) Destroy(_mesh);
-#endif
+        if (instanceJobs != null && !instanceJobs.Complete) instanceJobs.Run();
     }
 
-    void InitializeMesh(vertexBufferJob vertJob, IndexBufferJob indexJob)
+    public void Dispose()
     {
-        int vCount = vertJob.bufferPositions.Length;
-        NativeArray<float3> posNorm = new NativeArray<float3>(vCount * 2, Allocator.Temp);
-        int l = vCount - 1;
-        for (int i = 0; i < l; i += 2)
+        if (instanceJobs != null) instanceJobs.Dispose();
+    }
+
+    public void Spawn()
+    {
+        Dispose();
+
+        var p = transform.position;
+        Settings.Material.SetVector("_TransformPosition", new Vector4(p.x, p.y, p.z, 0f));
+
+        instanceJobs = new MeshInstanceJob(Settings, transform);
+        instanceJobs.Run();
+    }
+}
+
+public class MeshInstanceWriter
+{
+    Mesh mesh;
+    public Mesh Mesh => mesh;
+    GameObject gameObj;
+    public GameObject GameObject => gameObj;
+
+    public int InstanceCount = 0;
+
+    public void Destroy() => GameObject.Destroy(gameObj);
+
+    public MeshInstanceWriter(MeshInstancerSettings settings, Transform parent)
+    {
+        gameObj = GameObject.Instantiate(settings.MeshContainer, parent);
+        mesh = new Mesh();
+        mesh.SetVertexBufferParams(settings.Rate * settings.InstanceMesh.vertexCount, Vertex.GetVertexAttributes());
+        mesh.SetIndexBufferParams(settings.Rate * (int)settings.InstanceMesh.GetIndexCount(0), IndexFormat.UInt32);
+        gameObj.GetComponent<MeshFilter>().sharedMesh = mesh;
+    }
+
+    public void SetBufferData(ref InstanceVertexJob vJob, ref InstaceIndexJob iJob, int count)
+    {
+        mesh.SetVertexBufferData(vJob.outVertexBuffers, 0, InstanceCount * vJob.vertexCount, count * vJob.vertexCount, 0, MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontResetBoneBounds);
+        mesh.SetIndexBufferData(iJob.outIndexBuffers, 0, InstanceCount * iJob.indexCount, count * iJob.indexCount, MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontValidateIndices | MeshUpdateFlags.DontResetBoneBounds);
+
+        InstanceCount += count;
+
+        SubMeshDescriptor sm = new SubMeshDescriptor(0, InstanceCount * vJob.vertexCount, MeshTopology.Triangles);
+        sm.indexCount = InstanceCount * iJob.indexCount;
+        sm.vertexCount = InstanceCount * vJob.vertexCount;
+        sm.firstVertex = 0;
+        mesh.subMeshCount = 1;
+        mesh.SetSubMesh(0, sm);
+    }
+}
+
+public class MeshInstanceJob
+{
+    #region var
+
+    MeshInstancerSettings settings;
+    int vertexCount;
+    int indexCount;
+    Mesh.MeshDataArray instanceMeshDataArray;
+    Mesh.MeshData instanceMeshData;
+    MeshInstanceWriter[] meshWriters;
+    int currentMesh = 0;
+
+    int spawnRateCount;
+    public int SpawnedCount { get; private set; }
+    public bool Complete => SpawnedCount >= settings.Count;
+    int NextSpawnAmount
+    {
+        get
         {
-            posNorm[i] = vertJob.bufferPositions[i];
-            posNorm[i + 1] = vertJob.bufferNormals[i];
+            if (spawnRateCount + SpawnedCount < settings.Count) return spawnRateCount;
+            else return settings.Count - SpawnedCount;
         }
-        _mesh.SetVertexBufferParams(
-            vCount,
-            new VertexAttributeDescriptor
-                (VertexAttribute.Position, VertexAttributeFormat.Float32, 3),
-            new VertexAttributeDescriptor
-                (VertexAttribute.Normal, VertexAttributeFormat.Float32, 3)
+    }
+
+    InstanceVertexJob vJob;
+    InstaceIndexJob iJob;
+
+    #endregion
+
+    public MeshInstanceJob(MeshInstancerSettings settings, Transform parent)
+    {
+        this.settings = settings;
+        spawnRateCount = settings.Rate / 30;
+        vertexCount = settings.InstanceMesh.vertexCount;
+        indexCount = (int)settings.InstanceMesh.GetIndexCount(0);
+        instanceMeshDataArray = Mesh.AcquireReadOnlyMeshData(settings.InstanceMesh);
+        instanceMeshData = instanceMeshDataArray[0];
+        int meshCount = (int)(math.ceil(settings.Count / (float)settings.MaxInstancesPerMesh));
+        meshWriters = new MeshInstanceWriter[meshCount];
+        for (int i = 0; i < meshCount; i++)
+            meshWriters[i] = new MeshInstanceWriter(settings, parent);
+    }
+
+    public void DisposeJobs()
+    {
+        try { vJob.Dispose(); } catch { }
+        try { iJob.Dispose(); } catch { }
+    }
+
+    // TODO remove
+    public void Dispose()
+    {
+        DisposeJobs();
+        foreach (var mr in meshWriters) mr.Destroy();
+        try { instanceMeshDataArray.Dispose(); } catch { }
+    }
+
+    public void Run()
+    {
+        int spawnCount = NextSpawnAmount;
+        if (spawnCount > settings.MaxInstancesPerMesh - meshWriters[currentMesh].InstanceCount)
+        {
+            int spawnRemainder = settings.MaxInstancesPerMesh - meshWriters[currentMesh].InstanceCount;
+            spawnInstances(spawnRemainder, meshWriters[currentMesh]);
+
+            spawnCount -= spawnRemainder;
+            currentMesh++;
+        }
+        spawnInstances(spawnCount, meshWriters[currentMesh]);
+    }
+
+    void spawnInstances(int count, MeshInstanceWriter meshWriter)
+    {
+        vJob = newVJob(count);
+        iJob = newIJob(count, meshWriter.InstanceCount);
+
+        var jobs = new NativeArray<JobHandle>(2, Allocator.Temp);
+        jobs[0] = vJob.ScheduleParallel(vJob.outVertexBuffers.Length, settings.InnerLoopBatchCount, new JobHandle());
+        jobs[1] = iJob.ScheduleParallel(iJob.outIndexBuffers.Length, settings.InnerLoopBatchCount, new JobHandle());
+        JobHandle.CompleteAll(jobs);
+        jobs.Dispose();
+
+        SpawnedCount += count;
+
+        meshWriter.SetBufferData(ref vJob, ref iJob, count);
+
+        DisposeJobs();
+    }
+
+    InstaceIndexJob newIJob(int count, int indexOffset)
+    {
+        var iJob = new InstaceIndexJob();
+        iJob.vertexCount = vertexCount;
+        iJob.indexCount = indexCount;
+
+        iJob.indicies = new NativeArray<int>(iJob.indexCount, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+
+        // TODO : optimize
+        instanceMeshData.GetIndices(iJob.indicies, 0);
+
+        iJob.outIndexBuffers = new NativeArray<int>(count * iJob.indexCount, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+        iJob.indexOffset = indexOffset * vertexCount;
+
+        return iJob;
+    }
+
+    InstanceVertexJob newVJob(int count)
+    {
+        var vJob = new InstanceVertexJob();
+        vJob.seed = settings.Seed + (uint)SpawnedCount;
+        vJob.scale = settings.Scale;
+        vJob.minSize = settings.MinSize;
+        vJob.maxSize = settings.MaxSize;
+        vJob.vertexCount = vertexCount;
+
+        vJob.positions = new NativeArray<float3>(count, Allocator.TempJob);
+        for (int i = 0; i < count; i++)
+            vJob.positions[i] = settings.SpawnPointCache.Points[SpawnedCount + i];
+
+        int nV = count * vertexCount;
+        vJob.vertices = new NativeArray<float3>(nV, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+        vJob.normals = new NativeArray<float3>(nV, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+
+        // TODO : optimize
+        instanceMeshData.GetVertices(vJob.vertices.Reinterpret<Vector3>());
+        instanceMeshData.GetNormals(vJob.normals.Reinterpret<Vector3>());
+
+        vJob.outVertexBuffers = new NativeArray<Vertex>(nV, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+
+        return vJob;
+    }
+}
+
+[BurstCompile]
+public struct InstanceVertexJob : IJobFor
+{
+    [ReadOnly] public uint seed;
+    [ReadOnly] public float minSize;
+    [ReadOnly] public float maxSize;
+    [ReadOnly] public float scale;
+    [ReadOnly] public int vertexCount;
+    [DeallocateOnJobCompletion] [ReadOnly] public NativeArray<float3> positions;
+    [DeallocateOnJobCompletion] [ReadOnly] public NativeArray<float3> vertices;
+    [DeallocateOnJobCompletion] [ReadOnly] public NativeArray<float3> normals;
+
+    [WriteOnly] public NativeArray<Vertex> outVertexBuffers;
+
+    public void Dispose()
+    {
+        outVertexBuffers.Dispose();
+    }
+
+    public void Execute(int index)
+    {
+        int instanceN = (int)math.floor(index / (float)vertexCount);
+        Random rand = new Random(seed + (uint)instanceN);
+        float4x4 mat = float4x4.TRS(
+            positions[instanceN] * scale,
+            quaternion.Euler(rand.NextFloat3(360f)),
+            new float3(math.lerp(minSize, maxSize, rand.NextFloat()))
         );
-        _mesh.SetVertexBufferData(posNorm, 0, 0, vCount * 2);
-        posNorm.Dispose();
 
-        _mesh.SetIndexBufferParams(indexJob.bufferIndexes.Length, IndexFormat.UInt32);
-        _mesh.SetIndexBufferData(indexJob.bufferIndexes, 0, 0, indexJob.bufferIndexes.Length);
-
-        _mesh.SetSubMesh(0, new SubMeshDescriptor(0, indexJob.bufferIndexes.Length));
-
-        _mesh.bounds = new Bounds(Vector3.zero, Vector3.one * 10f);
-        // TODO remove
-        // _mesh.RecalculateNormals();
+        Vertex v = new Vertex();
+        v.pos = math.mul(mat, new float4(vertices[index % vertexCount], 1)).xyz;
+        v.normal = math.normalize(math.mul(mat, new float4(normals[index % vertexCount], 0)).xyz);
+        outVertexBuffers[index] = v;
     }
+}
 
-    void UpdateMesh()
+[BurstCompile]
+public struct InstaceIndexJob : IJobFor
+{
+    [ReadOnly] public int vertexCount;
+    [ReadOnly] public int indexCount;
+    [ReadOnly] public int indexOffset;
+    [DeallocateOnJobCompletion] [ReadOnly] public NativeArray<int> indicies;
+
+    [WriteOnly] public NativeArray<int> outIndexBuffers;
+
+    public void Dispose()
     {
-        _randomSeed = randomizeSeed ? (uint)UnityEngine.Random.Range(0, int.MaxValue) : _randomSeed;
-        jobVerts = new vertexBufferJob
-        {
-            vertexCount = vertexCount,
-            seed = _randomSeed,
-            scale = scale,
-            bufferPositions = new NativeArray<float3>(
-            vertexCount * instanceCount, Allocator.Persistent,
-            NativeArrayOptions.UninitializedMemory
-            ),
-            bufferNormals = new NativeArray<float3>(
-            vertexCount * instanceCount, Allocator.Persistent,
-            NativeArrayOptions.UninitializedMemory
-            ),
-            positions = new NativeArray<float3>(protoVerts, Allocator.Persistent),
-            normals = new NativeArray<float3>(protoNormals, Allocator.Persistent),
-        };
-
-        jobIndexes = new IndexBufferJob
-        {
-            vertexCount = vertexCount,
-            indexCount = indexCount,
-            bufferIndexes = new NativeArray<uint>(
-            indexCount * instanceCount, Allocator.Persistent,
-            NativeArrayOptions.UninitializedMemory
-            ),
-            indexes = new NativeArray<uint>(protoIndexes, Allocator.Persistent)
-        };
-
-        jobVertsHandle = jobVerts.Schedule(instanceCount * vertexCount, vertexCount);
-        jobIndexesHandle = jobIndexes.Schedule(instanceCount * indexCount, indexCount);
+        outIndexBuffers.Dispose();
     }
 
-    [BurstCompile(CompileSynchronously = true)]
-    struct IndexBufferJob : IJobParallelFor
+    public void Execute(int index)
     {
-        [ReadOnly] public int vertexCount;
-        [ReadOnly] public int indexCount;
-        [ReadOnly] public NativeArray<uint> indexes;
-        [WriteOnly] public NativeArray<uint> bufferIndexes;
-
-        public void Execute(int index)
-        {
-            float instanceN = math.floor(index / (float)indexCount);
-            uint vertOffset = (uint)(instanceN * vertexCount);
-            bufferIndexes[index] = vertOffset + indexes[index % indexCount];
-        }
-
-        internal void Dispose()
-        {
-            indexes.Dispose();
-            bufferIndexes.Dispose();
-        }
+        int instanceN = (int)math.floor(index / (float)indexCount);
+        outIndexBuffers[index] = indicies[index % indexCount] + (instanceN * vertexCount) + indexOffset;
     }
-
-    [BurstCompile(CompileSynchronously = true)]
-    struct vertexBufferJob : IJobParallelFor
-    {
-        [ReadOnly] public float vertexCount;
-        [ReadOnly] public uint seed;
-        [ReadOnly] public float scale;
-
-        [ReadOnly] public NativeArray<float3> positions;
-        [ReadOnly] public NativeArray<float3> normals;
-
-        [WriteOnly] public NativeArray<float3> bufferPositions;
-        [WriteOnly] public NativeArray<float3> bufferNormals;
-
-        public void Execute(int index)
-        {
-            int vertIndex = index % (int)vertexCount;
-            uint instanceN = (uint)math.floor(index / vertexCount);
-            var rand = new Random(seed + (uint)instanceN);
-
-            quaternion rot = quaternion.Euler(rand.NextFloat3(360f));
-            float4x4 pTRS = float4x4.TRS(rand.NextFloat3(),
-            rot,
-            new float3(math.lerp(0.2f, 1f, rand.NextFloat())) * scale);
-
-            float4 p = math.mul(pTRS, new float4(positions[vertIndex], 1f));
-            float3 pos = new float3(p[0], p[1], p[2]);
-            bufferPositions[index] = pos;
-
-            // Extract the vector part of the quaternion
-            float3 u = new float3(rot.value.x, rot.value.y, rot.value.z);
-            // Extract the scalar part of the quaternion
-            float s = rot.value.w;
-
-            float3 v = normals[vertIndex];
-            // Do the math
-            bufferNormals[index] = 2.0f * math.dot(u, v) * u
-                  + (s * s - math.dot(u, u)) * v
-                  + 2.0f * s * math.cross(u, v);
-        }
-
-        public void Dispose()
-        {
-            positions.Dispose();
-            normals.Dispose();
-            bufferPositions.Dispose();
-            bufferNormals.Dispose();
-        }
-    }
-
 }
