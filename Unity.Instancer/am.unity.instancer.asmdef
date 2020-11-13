@@ -1,12 +1,11 @@
 {
-    "name": "am.unity.instancer",
+    "name": "AM.Unity.Instancer",
     "references": [
         "Unity.Mathematics",
         "Unity.Burst",
         "Unity.Jobs",
         "Unity.Collections",
-        "ECSParticles",
-        "UnityTools"
+        "AM.Unity.Collections"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

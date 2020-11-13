@@ -87,7 +87,7 @@ public class MeshInstanceWriter
     {
         gameObj = GameObject.Instantiate(settings.MeshContainer, parent);
         mesh = new Mesh();
-        mesh.SetVertexBufferParams(settings.Rate * settings.InstanceMesh.vertexCount, Vertex.GetVertexAttributes());
+        mesh.SetVertexBufferParams(settings.Rate * settings.InstanceMesh.vertexCount, VertexPN.VertexAttributes);
         mesh.SetIndexBufferParams(settings.Rate * (int)settings.InstanceMesh.GetIndexCount(0), IndexFormat.UInt32);
         gameObj.GetComponent<MeshFilter>().sharedMesh = mesh;
     }
@@ -235,11 +235,12 @@ public class MeshInstanceJob
         instanceMeshData.GetVertices(vJob.vertices.Reinterpret<Vector3>());
         instanceMeshData.GetNormals(vJob.normals.Reinterpret<Vector3>());
 
-        vJob.outVertexBuffers = new NativeArray<Vertex>(nV, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
+        vJob.outVertexBuffers = new NativeArray<VertexPN>(nV, Allocator.TempJob, NativeArrayOptions.UninitializedMemory);
 
         return vJob;
     }
 }
+
 
 [BurstCompile]
 public struct InstanceVertexJob : IJobFor
@@ -253,7 +254,7 @@ public struct InstanceVertexJob : IJobFor
     [DeallocateOnJobCompletion] [ReadOnly] public NativeArray<float3> vertices;
     [DeallocateOnJobCompletion] [ReadOnly] public NativeArray<float3> normals;
 
-    [WriteOnly] public NativeArray<Vertex> outVertexBuffers;
+    [WriteOnly] public NativeArray<VertexPN> outVertexBuffers;
 
     public void Dispose()
     {
@@ -270,7 +271,7 @@ public struct InstanceVertexJob : IJobFor
             new float3(math.lerp(minSize, maxSize, rand.NextFloat()))
         );
 
-        Vertex v = new Vertex();
+        VertexPN v = new VertexPN();
         v.pos = math.mul(mat, new float4(vertices[index % vertexCount], 1)).xyz;
         v.normal = math.normalize(math.mul(mat, new float4(normals[index % vertexCount], 0)).xyz);
         outVertexBuffers[index] = v;
