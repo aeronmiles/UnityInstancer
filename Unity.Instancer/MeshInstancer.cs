@@ -45,19 +45,9 @@ public class MeshInstancer : MonoBehaviour
 
     MeshInstanceJob instanceJobs;
 
-    void OnDisable()
-    {
-        Dispose();
-    }
-
     private void Update()
     {
         if (instanceJobs != null && !instanceJobs.Complete) instanceJobs.Run();
-    }
-
-    public void Dispose()
-    {
-        if (instanceJobs != null) instanceJobs.Dispose();
     }
 
     public void Spawn()
@@ -69,6 +59,16 @@ public class MeshInstancer : MonoBehaviour
 
         instanceJobs = new MeshInstanceJob(Settings, transform);
         instanceJobs.Run();
+    }
+
+    void OnDisable()
+    {
+        Dispose();
+    }
+
+    public void Dispose()
+    {
+        if (instanceJobs != null) instanceJobs.Dispose();
     }
 }
 
@@ -110,8 +110,6 @@ public class MeshInstanceWriter
 
 public class MeshInstanceJob
 {
-    #region var
-
     MeshInstancerSettings settings;
     int vertexCount;
     int indexCount;
@@ -134,8 +132,8 @@ public class MeshInstanceJob
 
     InstanceVertexJob vJob;
     InstaceIndexJob iJob;
+    NativeArray<JobHandle> jobHandles;
 
-    #endregion
 
     public MeshInstanceJob(MeshInstancerSettings settings, Transform parent)
     {
@@ -155,6 +153,7 @@ public class MeshInstanceJob
     {
         try { vJob.Dispose(); } catch { }
         try { iJob.Dispose(); } catch { }
+        try { jobHandles.Dispose(); } catch { }
     }
 
     // TODO remove
@@ -184,11 +183,11 @@ public class MeshInstanceJob
         vJob = newVJob(count);
         iJob = newIJob(count, meshWriter.InstanceCount);
 
-        var jobs = new NativeArray<JobHandle>(2, Allocator.Temp);
-        jobs[0] = vJob.ScheduleParallel(vJob.outVertexBuffers.Length, settings.InnerLoopBatchCount, new JobHandle());
-        jobs[1] = iJob.ScheduleParallel(iJob.outIndexBuffers.Length, settings.InnerLoopBatchCount, new JobHandle());
-        JobHandle.CompleteAll(jobs);
-        jobs.Dispose();
+        jobHandles = new NativeArray<JobHandle>(2, Allocator.Temp);
+        jobHandles[0] = vJob.ScheduleParallel(vJob.outVertexBuffers.Length, settings.InnerLoopBatchCount, new JobHandle());
+        jobHandles[1] = iJob.ScheduleParallel(iJob.outIndexBuffers.Length, settings.InnerLoopBatchCount, new JobHandle());
+        JobHandle.CompleteAll(jobHandles);
+        jobHandles.Dispose();
 
         SpawnedCount += count;
 
